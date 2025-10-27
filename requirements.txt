@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+google-cloud-storage
+google-auth
+pydantic
+google-adk # adapt to your ADK package/version (or 'adk' if that's the pip name)
+python-dateutil
