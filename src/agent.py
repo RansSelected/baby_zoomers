@@ -6,7 +6,6 @@ from google.adk.agents import LlmAgent
 from google.adk.tools.agent_tool import AgentTool # ToolSpec might still be needed for function-level tools
 
 # Internal imports
-from . import prompt # Assuming you'll move the instructions to a prompt.py file
 from .tools.calendar_tool import calendar_tool # New tool for the explicit calendar logic
 from .tools.sitter_tool import SitterTool # New tool for the explicit sitter logic
 from .services.gcs_memory_service import GCSMemoryService # Services need to be instantiated and passed
@@ -49,7 +48,7 @@ baby_brain_agent = LlmAgent(
     # services can be passed here if the ADK supports it for LlmAgent, 
     # otherwise, they're typically managed by a higher-level framework or within the tools.
     #services={"memory": memory_service, "session": session_service},
-    tools=[calendar_tool],
+    tools=calendar_tool.get_tools(),
 )
 
 root_agent = baby_brain_agent
