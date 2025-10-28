@@ -1,38 +1,152 @@
-# agent/agent.py
 import os
+from datetime import datetime
+from typing import Optional
 
-# ADK imports (adjust to your installed ADK package names)
-from google.adk.agents import LlmAgent
-from google.adk.tools.agent_tool import AgentTool # ToolSpec might still be needed for function-level tools
+from dateutil import parser
+from dotenv import load_dotenv
+from fastapi.openapi.models import OAuth2
+from fastapi.openapi.models import OAuthFlowAuthorizationCode
+from fastapi.openapi.models import OAuthFlows
+from google.adk import Agent
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.auth.auth_tool import AuthConfig
+from google.adk.tools.authenticated_function_tool import AuthenticatedFunctionTool
+from google.adk.tools.google_api_tool import CalendarToolset
+from google.adk.tools.tool_context import ToolContext
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-# Internal imports
-from .tools.calendar_tool import calendar_tool # New tool for the explicit calendar logic
-from .tools.sitter_tool import SitterTool # New tool for the explicit sitter logic
-from .services.gcs_memory_service import GCSMemoryService # Services need to be instantiated and passed
+from .services.gcs_memory_service import GCSMemoryService
 from .services.session_service import SessionService
 
+# Load environment variables from .env file
+load_dotenv()
+
 # Environment variables
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 GCS_BUCKET = os.getenv("GCS_BUCKET")
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
 if not GCS_BUCKET:
     raise RuntimeError("GCS_BUCKET environment variable required")
+if not CLIENT_ID or not CLIENT_SECRET:
+    raise RuntimeError("CLIENT_ID and CLIENT_SECRET environment variables required")
 
-# 1. Instantiate Services and Dependent Tools
+# 1. Instantiate Services
 memory_service = GCSMemoryService(bucket_name=GCS_BUCKET)
 session_service = SessionService()
 
-# The original CalendarTool and SitterTool are likely low-level.
-# The *Logic* tools will wrap them and contain the hardcoded parsing/decision logic.
-# For simplicity, we'll assume CalendarTool and SitterTool are imported elsewhere or part of the new logic tools.
+# 2. Define Tools
+def list_events(
+    tool_context: ToolContext,
+    credential: AuthCredential,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Search for calendar events."""
+    creds = Credentials(
+        token=credential.oauth2.access_token,
+        refresh_token=credential.oauth2.refresh_token,
+    )
+    service = build("calendar", "v3", credentials=creds)
+    events_result = (
+        service.events()
+        .list(
+            calendarId="primary",
+            timeMin=start_time + "Z" if start_time else None,
+            timeMax=end_time + "Z" if end_time else None,
+            maxResults=limit,
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
+    return events_result.get("items", [])
 
-# Instantiate the tools that contain the original handle_message logic
-# NOTE: You'll need to define CalendarLogicTool and SitterLogicTool
-#sitter_tool = SitterTool(memory=memory_service, sessions=session_service)
+def create_event(
+    tool_context: ToolContext,
+    credential: AuthCredential,
+    summary: str,
+    start_time: str,
+    end_time: str,
+    attendees: Optional[list[str]] = None,
+) -> dict:
+    """Creates a calendar event."""
+    creds = Credentials(
+        token=credential.oauth2.access_token,
+        refresh_token=credential.oauth2.refresh_token,
+    )
+    try:
+        service = build("calendar", "v3", credentials=creds)
 
+        start_dt = parser.parse(start_time)
+        end_dt = parser.parse(end_time)
 
-# 2. Define the Root LlmAgent
-baby_brain_agent = LlmAgent(
+        event = {
+            "summary": summary,
+            "start": {
+                "dateTime": start_dt.isoformat(),
+                "timeZone": "America/Los_Angeles", # Or get from user's profile
+            },
+            "end": {
+                "dateTime": end_dt.isoformat(),
+                "timeZone": "America/Los_Angeles", # Or get from user's profile
+            },
+        }
+        if attendees:
+            event["attendees"] = [{"email": email} for email in attendees]
+
+        created_event = (
+            service.events()
+            .insert(
+                calendarId="primary",
+                body=event,
+            )
+            .execute()
+        )
+        return created_event
+    except HttpError as error:
+        return {"error": f"An error occurred: {error}"}
+
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+auth_config = AuthConfig(
+    auth_scheme=OAuth2(
+        flows=OAuthFlows(
+            authorizationCode=OAuthFlowAuthorizationCode(
+                authorizationUrl="https://accounts.google.com/o/oauth2/auth",
+                tokenUrl="https://oauth2.googleapis.com/token",
+                scopes={scope: "" for scope in SCOPES},
+            )
+        )
+    ),
+    raw_auth_credential=AuthCredential(
+        auth_type=AuthCredentialTypes.OAUTH2,
+        oauth2=OAuth2Auth(
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+        ),
+    ),
+)
+
+list_events_tool = AuthenticatedFunctionTool(
+    func=list_events,
+    auth_config=auth_config,
+)
+
+create_event_tool = AuthenticatedFunctionTool(
+    func=create_event,
+    auth_config=auth_config,
+)
+
+# 3. Define the Root Agent
+baby_brain_agent = Agent(
     name="BabyBrain",
     model=GEMINI_MODEL,
     description=(
@@ -43,12 +157,8 @@ baby_brain_agent = LlmAgent(
         "You are BabyBrain, a proactive childcare logistics assistant. "
         "Use your tools to handle calendar updates, set proactive reminders, "
         "and manage sitter coordination. Always ask clarifying questions when needed."
-        # Optionally, move this long instruction to prompt.ACADEMIC_COORDINATOR_PROMPT
     ),
-    # services can be passed here if the ADK supports it for LlmAgent, 
-    # otherwise, they're typically managed by a higher-level framework or within the tools.
-    #services={"memory": memory_service, "session": session_service},
-    tools=calendar_tool.get_tools(),
+    tools=[list_events_tool, create_event_tool],
 )
 
 root_agent = baby_brain_agent
