@@ -92,11 +92,11 @@ def create_event(
             "summary": summary,
             "start": {
                 "dateTime": start_dt.isoformat(),
-                "timeZone": "America/Los_Angeles", # Or get from user's profile
+                "timeZone": "Europe/Brussels", # Or get from user's profile
             },
             "end": {
                 "dateTime": end_dt.isoformat(),
-                "timeZone": "America/Los_Angeles", # Or get from user's profile
+                "timeZone": "Europe/Brussels", # Or get from user's profile
             },
         }
         if attendees:
@@ -151,7 +151,7 @@ baby_brain_agent = Agent(
     model=GEMINI_MODEL,
     description=(
         "A proactive childcare logistics assistant for managing calendar events, "
-        "setting reminders, and coordinating with sitters."
+        "setting reminders, and coordinating with baby-sitters."
     ),
     instruction=(
         "You are BabyBrain, a proactive childcare logistics assistant. "
